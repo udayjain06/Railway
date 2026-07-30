@@ -1,7 +1,0 @@
-fastapi
-uvicorn
-numpy
-pillow
-httpx
-google-generativeai
-python-dotenv
