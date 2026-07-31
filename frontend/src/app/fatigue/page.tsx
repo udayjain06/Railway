@@ -236,25 +236,7 @@ export default function FatiguePage() {
     const avgP = frameTotal.current > 0 ? Math.round(perclosSum.current / frameTotal.current) : 0;
 
     try {
-      const res = await fetch("https://api.anthropic.com/v1/messages", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model: "claude-sonnet-4-20250514",
-          max_tokens: 1000,
-          messages: [{
-            role: "user",
-            content: `You are a railway safety AI system. Generate a concise fatigue incident report based on these metrics:
-- Session duration: ${mm}m ${ss}s
-- Max PERCLOS score: ${maxPerclos.current}%
-- Average PERCLOS score: ${avgP}%
-- Head nod events: ${headNodCount.current}
-- Alert level reached: ${level}
-
-Write a professional 3-sentence safety report including: what was detected, severity assessment, and recommended action. Be direct and factual. Do not use markdown.`
-          }]
-        })
-      });
+      const res = await fetch("https://railway-xdof.onrender.com/api/ai", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ prompt: prompt, max_tokens: 1000 }) });
       const data = await res.json();
       const aiText = data.content?.[0]?.text || "Report generation failed — please try again.";
       setReport({

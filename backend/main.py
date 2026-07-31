@@ -9,12 +9,13 @@ try:
 except:
     pass
 
+# ── Gemini setup ──────────────────────────────────────────────────────────────
 try:
     import google.generativeai as genai
     GEMINI_KEY = os.getenv("GEMINI_API_KEY")
     if GEMINI_KEY:
         genai.configure(api_key=GEMINI_KEY)
-        model = genai.GenerativeModel("gemini-2.5-flash")
+        gemini_model = genai.GenerativeModel("gemini-2.5-flash")
         GEMINI_AVAILABLE = True
         print("Gemini ready")
     else:
@@ -25,13 +26,22 @@ except:
 RAIL_API_KEY = os.getenv("RAIL_API_KEY", "")
 
 app = FastAPI(title="RailSaarthi API")
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 class FrameInput(BaseModel):
     frame: str
 
 class ChatRequest(BaseModel):
     question: str
+
+class AIRequest(BaseModel):
+    prompt: str
+    max_tokens: int = 500
 
 # ── Fatigue ───────────────────────────────────────────────────────────────────
 @app.post("/api/fatigue")
@@ -40,16 +50,46 @@ async def detect_fatigue(body: FrameInput):
         return {"is_closed": False, "no_face": True}
     return {"is_closed": random.random() < 0.08, "no_face": False}
 
-# ── Delays — tries real API first, falls back to mock ─────────────────────────
-TRAIN_NUMBERS = ["12301", "12951", "22691", "12002", "12627", "13006"]
+# ── AI endpoint — ALL Claude/Gemini calls go through here ─────────────────────
+@app.post("/api/ai")
+async def ai_generate(body: AIRequest):
+    """
+    Central AI endpoint — frontend never calls Anthropic/Gemini directly.
+    Uses Gemini if available, otherwise returns a fallback.
+    """
+    if GEMINI_AVAILABLE:
+        try:
+            response = gemini_model.generate_content(body.prompt)
+            return {"text": response.text, "model": "gemini"}
+        except Exception as e:
+            return {"text": f"AI error: {str(e)}", "model": "error"}
+    else:
+        # Fallback responses based on prompt content
+        if "fatigue" in body.prompt.lower() or "perclos" in body.prompt.lower():
+            return {
+                "text": "Fatigue monitoring session completed. PERCLOS analysis indicates elevated drowsiness levels were detected. Immediate rest is recommended before resuming operation.",
+                "model": "fallback"
+            }
+        elif "fleet" in body.prompt.lower() or "sensor" in body.prompt.lower() or "maintenance" in body.prompt.lower():
+            return {
+                "text": "Fleet sensor analysis indicates multiple components approaching critical thresholds. Prioritize wheel bearing inspection on Train #12301 and brake pad replacement on Train #12951.",
+                "model": "fallback"
+            }
+        elif "incident" in body.prompt.lower():
+            return {
+                "text": "Incident flagged by automated monitoring system. Severity assessment indicates immediate crew dispatch is required. Control room has been notified.",
+                "model": "fallback"
+            }
+        return {"text": "Analysis complete. Please review the sensor data and take appropriate action.", "model": "fallback"}
 
+# ── Delays ────────────────────────────────────────────────────────────────────
+TRAIN_NUMBERS = ["12301", "12951", "22691", "12002", "12627", "13006"]
 STATION_COORDS = {
     "NDLS":[28.64,77.22],"HWH":[22.58,88.34],"MMCT":[18.94,72.83],
     "SBC":[12.97,77.59],"CNB":[26.45,80.35],"BPL":[23.26,77.41],
     "AGC":[27.18,78.01],"NGP":[21.14,79.08],"ST":[21.17,72.83],
-    "LKO":[26.85,80.95],"ASR":[31.63,74.87],"GKP":[26.75,83.37],
+    "LKO":[26.85,80.95],"ASR":[31.63,74.87],
 }
-
 MOCK_TRAINS = [
     {"id":"12301","name":"Howrah Rajdhani",    "from":"New Delhi","to":"Howrah",    "scheduled":"16:10","currentDelay":45,"predictedDelay":72,"status":"critical","affectedTrains":["13006"],"platform":"P-9","lastStation":"Kanpur", "lat":26.46,"lng":80.35},
     {"id":"12951","name":"Mumbai Rajdhani",    "from":"Mumbai",   "to":"New Delhi", "scheduled":"17:00","currentDelay":18,"predictedDelay":35,"status":"delayed", "affectedTrains":[],       "platform":"P-2","lastStation":"Surat",  "lat":21.17,"lng":72.83},
@@ -66,62 +106,47 @@ def parse_delay(s: str) -> int:
     m = re.search(r"(\d+)\s*M", s, re.I)
     return (int(h.group(1))*60 if h else 0) + (int(m.group(1)) if m else 0)
 
-async def fetch_real_train(train_no: str) -> dict | None:
-    if not RAIL_API_KEY:
-        return None
+async def fetch_real_train(train_no: str):
+    if not RAIL_API_KEY: return None
     try:
         today = time.strftime("%Y%m%d")
         url = f"https://indianrailapi.com/api/v2/livetrainstatus/apikey/{RAIL_API_KEY}/trainnumber/{train_no}/date/{today}/"
         async with httpx.AsyncClient(timeout=8) as client:
             res = await client.get(url)
             data = res.json()
-        if data.get("ResponseCode") != "200":
-            return None
+        if data.get("ResponseCode") != "200": return None
         current = data.get("CurrentStation", {})
         delay = parse_delay(current.get("DelayInDeparture", "0 M"))
-        predicted = min(delay + int(delay * 0.6), delay + 30)
+        predicted = delay + int(delay * 0.4)
         sc = current.get("StationCode", "")
         coords = STATION_COORDS.get(sc, [22.5, 80.0])
         mock = next((m for m in MOCK_TRAINS if m["id"] == train_no), {})
         status = "critical" if predicted > 30 else "delayed" if predicted > 5 else "on-time"
         return {
-            "id": train_no,
-            "name": data.get("TrainName", mock.get("name", f"Train {train_no}")),
-            "from": mock.get("from", "Origin"),
-            "to":   mock.get("to", "Destination"),
-            "scheduled": mock.get("scheduled", "--:--"),
-            "currentDelay": delay,
-            "predictedDelay": predicted,
-            "status": status,
-            "affectedTrains": [],
-            "platform": mock.get("platform", "--"),
-            "lastStation": current.get("StationName", "Unknown"),
-            "lat": coords[0], "lng": coords[1],
-            "isReal": True,
+            "id": train_no, "name": data.get("TrainName", mock.get("name","")),
+            "from": mock.get("from",""), "to": mock.get("to",""),
+            "scheduled": mock.get("scheduled","--:--"),
+            "currentDelay": delay, "predictedDelay": predicted,
+            "status": status, "affectedTrains": [],
+            "platform": mock.get("platform","--"),
+            "lastStation": current.get("StationName","Unknown"),
+            "lat": coords[0], "lng": coords[1], "isReal": True,
         }
-    except Exception as e:
-        print(f"Train {train_no} fetch failed: {e}")
-        return None
+    except: return None
 
 @app.get("/api/delays")
 async def get_delays():
-    real_data = []
     if RAIL_API_KEY:
         import asyncio
         results = await asyncio.gather(*[fetch_real_train(n) for n in TRAIN_NUMBERS])
-        real_data = [r for r in results if r is not None]
-
-    if real_data:
-        print(f"Real data: {len(real_data)}/{len(TRAIN_NUMBERS)} trains")
-        # Fill missing with mock
-        real_ids = {t["id"] for t in real_data}
-        for m in MOCK_TRAINS:
-            if m["id"] not in real_ids:
-                real_data.append({**m, "isReal": False})
-        return {"trains": real_data, "updated_at": time.time(), "source": "live"}
-    else:
-        print("Using mock data")
-        return {"trains": [{**m, "isReal": False} for m in MOCK_TRAINS], "updated_at": time.time(), "source": "mock"}
+        real = [r for r in results if r]
+        if real:
+            real_ids = {t["id"] for t in real}
+            for m in MOCK_TRAINS:
+                if m["id"] not in real_ids:
+                    real.append({**m, "isReal": False})
+            return {"trains": real, "updated_at": time.time(), "source": "live"}
+    return {"trains": [{**m, "isReal": False} for m in MOCK_TRAINS], "updated_at": time.time(), "source": "mock"}
 
 # ── Occupancy ─────────────────────────────────────────────────────────────────
 def gen_coaches():
@@ -141,18 +166,6 @@ async def get_occupancy():
         {"id":"P4","station":"New Delhi","train":"Bhopal Shatabdi", "trainNo":"12002","arrivesIn":random.randint(20,30),"coaches":gen_coaches()},
         {"id":"P9","station":"New Delhi","train":"Mumbai Mail",      "trainNo":"12137","arrivesIn":random.randint(30,45),"coaches":gen_coaches()},
     ]}
-
-# ── Gemini Chat ───────────────────────────────────────────────────────────────
-@app.post("/api/chat")
-async def chat(req: ChatRequest):
-    if not GEMINI_AVAILABLE:
-        return {"answer": "AI chat unavailable — GEMINI_API_KEY not set."}
-    try:
-        prompt = f"You are RailSaarthi AI, an intelligent assistant for Indian Railways. Answer concisely:\n\n{req.question}"
-        response = model.generate_content(prompt)
-        return {"answer": response.text}
-    except Exception as e:
-        return {"answer": f"Error: {str(e)}"}
 
 @app.get("/")
 async def root():

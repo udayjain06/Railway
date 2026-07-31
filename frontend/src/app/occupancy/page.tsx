@@ -56,7 +56,7 @@ export default function OccupancyPage() {
   useEffect(() => {
     async function load() {
       try {
-        const res = await fetch("http://localhost:8000/api/occupancy");
+        const res = await fetch("https://railway-xdof.onrender.com/api/occupancy");
         const data = await res.json();
         setPlatforms(data.platforms);
       } catch {

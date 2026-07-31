@@ -49,3 +49,15 @@ npm-debug.log*
 # Environment files — NEVER push these
 backend/.env
 .env
+
+#adding teh things
+node_modules/
+.next/
+.env
+.env.local
+backend/.env
+backend/__pycache__/
+*.pyc
+.DS_Store
+Thumbs.db
+.vscode/

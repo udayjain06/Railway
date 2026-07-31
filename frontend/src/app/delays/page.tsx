@@ -83,7 +83,7 @@ export default function DelaysPage() {
   async function fetchData() {
     let data = MOCK_TRAINS;
     try {
-      const res = await fetch("http://localhost:8000/api/delays");
+      const res = await fetch("https://railway-xdof.onrender.com/api/delays");
       const json = await res.json();
       // Merge lat/lng from mock since backend doesn't have it
       data = json.trains.map((t: any) => ({
